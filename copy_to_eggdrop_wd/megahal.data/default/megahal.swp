@@ -1,0 +1,16 @@
+#
+#	The word on the left is changed to the word on the
+#	right when used as a keyword
+#
+Я	ТЫ
+МОЕ	ТВОЕ
+МОЁ	ТВОЁ
+МНЕ	ТЕБЕ
+МОЙ	ТВОЙ
+МЕНЯ	ТЕБЯ
+ТЫ	Я
+ТЕБЕ	МНЕ
+ТВОЙ	МОЙ
+ТВОЕ	МОЕ
+ТЕБЯ	МЕНЯ
+ТВОЁ	МОЁ

@@ -1,0 +1,528 @@
+diff -BurN eggdrop1.6.20-sp0010_bak/src/mod/megahal.mod/megahal.c eggdrop1.6.20-sp0010/src/mod/megahal.mod/megahal.c
+--- eggdrop1.6.20-sp0010_bak/src/mod/megahal.mod/megahal.c	2009-10-19 18:24:24.000000000 +0400
++++ eggdrop1.6.20-sp0010/src/mod/megahal.mod/megahal.c	2010-10-27 15:04:02.291687000 +0400
+@@ -21,7 +21,7 @@
+ 
+ 
+ /*
+- * MegaHAL module for eggdrop v3.6
++ * MegaHAL module for eggdrop v3.7
+  * By Zev ^Baron^ Toledano (megahal at thelastexit.net) and Jason Hutchens
+  * Artificially Intelligent conversation with learning capability and
+  * psychotic personality.
+@@ -36,6 +36,15 @@
+  *
+  * (all old comments were moved to the end of this file)
+  *
++ * Additions and changes by Nexor:
++ *
++ * Ver 3.7 Nov 2010
++ * - Fixed memory allocation bug in mystrdup
++ * - Megahal training resources and other read only files moved to separate directories: megahal_directory_resource
++ * - Megahal brains and generated files moved to separate directories: megahal_directory_cache
++ * - Removed compilation warnings with fread
++ * - Rewrited change_personality and load_personality
++ *
+  * Additions and changes by z0rc:
+  *
+  * Ver 3.6: Nov 2009
+@@ -188,9 +197,9 @@
+ 
+ #define MAKING_MEGAHAL
+ #define MODULE_NAME "MegaHAL"
+-#define VER "3.6"
++#define VER "3.7"
+ #define VER1 3
+-#define VER2 6
++#define VER2 7
+ #define COOKIE "MegaHAL83"
+ #include <stdlib.h>
+ /* megahal preproc directives */
+@@ -225,8 +234,8 @@
+ static DICTIONARY *aux = NULL;
+ static SWAP *swp = NULL;
+ static bool used_key;
+-static char *directory = NULL;
+-static wchar_t *last = NULL;
++static char directory_cache[513] = DIR_DEFAULT_CACHE;
++static char directory_resources[513] = DIR_DEFAULT_RESOURCES;
+ 
+ /* predefinitions for eggdrop port */
+ 
+@@ -308,6 +317,8 @@
+   {"talkexcludechans", texcludechans, 512, 0},
+   {"respondexcludechans", rexcludechans, 512, 0},
+   {"responsekeywords", responsekeywords, 512, 0},
++  {"megahal_directory_resources", directory_resources, 512, 0},
++  {"megahal_directory_cache", directory_cache, 512, 0},
+   {0, 0, 0, 0}
+ };
+ 
+@@ -518,7 +529,7 @@
+ 	/*
+ 	 *	Load the default personality.
+ 	 */
+-	change_personality(NULL, 0, &model);
++	change_personality(&model, NULL, NULL);
+ 	putlog(LOG_MISC, "*", "MegaHAL v%s by ^Baron^ loaded.", VER);
+ 
+ 	return NULL;
+@@ -538,7 +549,10 @@
+ // Next, a hacked attempt at strdup(), since I can't use malloc() anywhere.
+ static wchar_t *mystrdup(const wchar_t *s)
+ {
+-	wchar_t *mytmp = nmalloc(wcslen(s)+sizeof(wchar_t));
++  int len = (wcslen(s)+1)*sizeof(wchar_t);
++
++
++	wchar_t *mytmp = nmalloc(len);
+ 
+ 	Context;
+ 	if(mytmp == NULL)
+@@ -1291,37 +1305,27 @@
+ 
+ static void reloadphrases()
+ {
+-	char *filename=NULL;
+-
++  char filename[512];
+ 	Context;
+-	filename = (char *)nmalloc(sizeof(char)*(strlen(directory)+strlen(SEP)+12));
+-	if(filename == NULL)
+-		error("reloadphrases","Unable to allocate filename");
+ 
+ 	free_model(model);
+ 	model = new_model(order);
+ 
+-	sprintf(filename, "%s%smegahal.phr", directory, SEP);
++	snprintf(filename, sizeof(filename), "%s%smegahal.phr", directory_cache, SEP);
+ 	train(model, filename);
+ 
+-	nfree(filename);
+ }
+ 
+ static int tcl_learnfile STDVAR
+ {
+-	char *filename = NULL;
++  char filename[512];
+ 
+ 	Context;
+ 	BADARGS(2, 2, " <filename>");
+ 
+-	filename = (char *)nmalloc(sizeof(char)*(strlen(directory)+strlen(SEP)+strlen(argv[1])+1));
+-	if(filename == NULL)
+-		error("reloadphrases","Unable to allocate filename");
+-
+-	sprintf(filename, "%s%s%s", directory, SEP, argv[1]);
++	snprintf(filename, sizeof(filename), "%s%s%s", directory_resources, SEP, argv[1]);
+ 	train(model, filename);
+ 
+-	nfree(filename);
+ 	putlog(LOG_MISC, "*", "Learned file: %s", filename);
+ 	return TCL_OK;
+ }
+@@ -1583,7 +1587,10 @@
+ static int tcl_reloadbrain STDVAR
+ {
+ 	Context;
+-	change_personality(NULL, 0, &model);
++	setlocale(LC_ALL, "");
++  char * resources = argc >= 2 ? argv[1] : NULL;
++  char * cache = argc >= 3 ? argv[2] : NULL;
++  change_personality(&model, resources, cache);
+ 	putlog(LOG_MISC, "*", "Brain reloaded");
+ 	return TCL_OK;
+ }
+@@ -2255,9 +2262,11 @@
+ 	int size;
+ 
+ 	Context;
+-	fread(&size, sizeof(BYTE4), 1, file);
+-	for(i=0; i<size; ++i)
+-		load_word(file, dictionary);
++	if ( fread(&size, sizeof(BYTE4), 1, file) ) {
++	  for(i=0; i<size; ++i) {
++		  load_word(file, dictionary);
++    }
++  }
+ }
+ 
+ /*---------------------------------------------------------------------------*/
+@@ -2290,16 +2299,21 @@
+ 	STRING word;
+ 
+ 	Context;
+-	fread(&(word.length), sizeof(BYTE1), 1, file);
+-	word.word = (wchar_t *)nmalloc(sizeof(wchar_t)*word.length);
+-	if(word.word == NULL) {
+-		error("load_word", "Unable to allocate word");
+-		return;
+-	}
+-	for(i=0; i<word.length; ++i)
+-		fread(&(word.word[i]), sizeof(wchar_t), 1, file);
+-	add_word(dictionary, word);
+-	nfree(word.word);
++	
++  if ( fread(&(word.length), sizeof(BYTE1), 1, file) ) {
++  	word.word = (wchar_t *)nmalloc(sizeof(wchar_t)*word.length);
++  	if(word.word == NULL) {
++  		error("load_word", "Unable to allocate word");
++  		return;
++  	}
++  	for(i=0; i<word.length; ++i) {
++  		if (!fread(&(word.word[i]), sizeof(wchar_t), 1, file) ) {
++        break;
++      }
++    }
++  	add_word(dictionary, word);
++  	nfree(word.word);
++  }
+ }
+ 
+ /*---------------------------------------------------------------------------*/
+@@ -2777,9 +2791,12 @@
+ 	FILE *file;
+ 	char *ldict_word;
+ 	wchar_t *tmp;
++  char filename[512];
++
++  snprintf(filename, sizeof(filename), "%s%smegahal.dic", directory_cache, SEP);
+ 
+ 	Context;
+-	file = fopen("megahal.dic", "w");
++	file = fopen(filename, "w");
+ 	if(file == NULL) {
+ 		warn("show_dictionary", "Unable to open file");
+ 		return;
+@@ -2797,7 +2814,7 @@
+ 		fprintf(file, "\n");
+ 	}
+ 
+-	fclose(file);
++  fclose(file);
+ }
+ 
+ static void save_phrases(MODEL *model)
+@@ -2806,11 +2823,12 @@
+ 	DICTIONARY *phrase;
+ 	FILE *file;
+ 	char *phrase2;
++  char filename[512];
+ 
+ 	Context;
+ 	phrase = new_dictionary();
+-
+-	file = fopen("megahal.phr", "w");
++  snprintf(filename, sizeof(filename), "%s%smegahal.phr", directory_cache, SEP);
++	file = fopen(filename, "w");
+ 	if(file == NULL) {
+ 		warn("save_phrases", "Unable to open file");
+ 		return;
+@@ -2848,25 +2866,14 @@
+ {
+ 	register int i, j;
+ 	FILE *file;
+-	static char *filename = NULL;
++  char filename[512];
+ 
+ 	Context;
+-	if(filename == NULL)
+-		filename = (char *)nmalloc(sizeof(char)*1);
+-
+-	/*
+-	 *    Allocate memory for the filename
+-	 */
+-	filename = (char *)nrealloc(filename, sizeof(char)*(strlen(directory)+strlen(SEP)+12));
+-	if(filename == NULL)
+-		error("save_model","Unable to allocate filename");
+ 
+ 	show_dictionary(model->dictionary);
+ 	save_phrases(model);
+-	if(filename == NULL)
+-		return;
+ 
+-	sprintf(filename, "%s%smegahal.brn", directory, SEP);
++	snprintf(filename, sizeof(filename), "%s%s%s", directory_cache, SEP, modelname);
+ 	file = fopen(filename, "wb");
+ 	if(file == NULL) {
+ 		warn("save_model", "Unable to open file `%s'", filename);
+@@ -2923,26 +2930,28 @@
+ 	register int i;
+ 
+ 	Context;
+-	fread(&(node->symbol), sizeof(BYTE2), 1, file);
+-	fread(&(node->usage), sizeof(BYTE4), 1, file);
+-	fread(&(node->count), sizeof(BYTE2), 1, file);
+-	fread(&(node->branch), sizeof(BYTE2), 1, file);
+-
+-	if(node->branch==0)
+-		return;
+-
+-	node->tree = (TREE **)nmalloc(sizeof(TREE *)*(node->branch));
+-	if(node->tree == NULL) {
+-		error("load_tree", "Unable to allocate subtree");
+-		return;
+-	}
+-
+-	for(i=0; i<node->branch; ++i) {
+-		node->tree[i] = new_node();
+-		++level;
+-		load_tree(file, node->tree[i]);
+-		--level;
+-	}
++	if ( fread(&(node->symbol), sizeof(BYTE2), 1, file) &&
++	  fread(&(node->usage), sizeof(BYTE4), 1, file) &&
++	  fread(&(node->count), sizeof(BYTE2), 1, file) &&
++	  fread(&(node->branch), sizeof(BYTE2), 1, file) ) {
++
++  	if(node->branch==0) {
++  		return;
++    }
++
++  	node->tree = (TREE **)nmalloc(sizeof(TREE *)*(node->branch));
++  	if(node->tree == NULL) {
++  		error("load_tree", "Unable to allocate subtree");
++  		return;
++  	}
++
++  	for(i=0; i<node->branch; ++i) {
++  		node->tree[i] = new_node();
++  		++level;
++  		load_tree(file, node->tree[i]);
++  		--level;
++  	}
++  }
+ }
+ 
+ /*---------------------------------------------------------------------------*/
+@@ -2969,33 +2978,39 @@
+ 		return FALSE;
+ 	}
+ 
+-	fread(cookie, sizeof(wchar_t), wcslen(_T(COOKIE)), file);
+-	if(wcsncmp(cookie, _T(COOKIE), wcslen(_T(COOKIE))) != 0) {
++	if ( !fread(cookie, sizeof(wchar_t), wcslen(_T(COOKIE)), file) ||
++	  wcsncmp(cookie, _T(COOKIE), wcslen(_T(COOKIE))) != 0 ||
++    !fread(&(model->order), sizeof(BYTE1), 1, file)
++  ) {
+ 		warn("load_model", "File `%s' is not a MegaHAL brain", filename);
+ 		goto fail;
+ 	}
+ 
+-	fread(&(model->order), sizeof(BYTE1), 1, file);
++	
+ 	order = model->order;
+ 	load_tree(file, model->forward);
+ 	load_tree(file, model->backward);
+ 	load_dictionary(file, model->dictionary);
+ 
+-	fread(&(model->phrasecount), sizeof(BYTE4), 1, file);
+-	if(realloc_phrase(model) == NULL) {
++	if ( !fread(&(model->phrasecount), sizeof(BYTE4), 1, file) ||
++	realloc_phrase(model) == NULL ) {
+ 		error("load_model", "Unable to reallocate phrase");
+ 		return FALSE;
+ 	}
+ 	for(i=0; i<model->phrasecount; ++i) {
+-		fread(&size, sizeof(BYTE2), 1, file);
+-		model->phrase[i]=(BYTE2 *)nmalloc(sizeof(BYTE2)*(size+2));
+-		if (model->phrase[i] == NULL) {
+-			error("learn", "Unable to allocate phrase");
+-			return FALSE;
+-		}
++		if ( fread(&size, sizeof(BYTE2), 1, file) ) {
++		  model->phrase[i]=(BYTE2 *)nmalloc(sizeof(BYTE2)*(size+2));
++		  if (model->phrase[i] == NULL) {
++			  error("learn", "Unable to allocate phrase");
++			  return FALSE;
++		  }
++    }
+ 		model->phrase[i][0] = size;
+-		for(j=0; j<size; ++j)
+-			fread(&(model->phrase[i][j+1]), sizeof(BYTE2), 1, file);
++		for(j=0; j<size; ++j) {
++			if (!fread(&(model->phrase[i][j+1]), sizeof(BYTE2), 1, file)) {
++        break;
++      }
++    }
+ 		model->phrase[i][size+1] = 1; // terminator
+ 	}
+ 
+@@ -3859,8 +3873,12 @@
+ 		if(buffer[0]=='#')
+ 			continue;
+ 		from = strtok(buffer, "\t ");
+-		to = strtok(NULL, "\t \n#");
+-		add_swap(list, locale_to_wchar(from), locale_to_wchar(to));
++    to = strtok(NULL, "\t \n#");
++    if (from && to) {
++      wchar_t * wfrom = locale_to_wchar(from);
++      wchar_t * wto = locale_to_wchar(to);
++      add_swap(list, wfrom , wto);
++    }
+ 	}
+ 
+ 	fclose(file);
+@@ -3958,40 +3976,34 @@
+ static void load_personality(MODEL **model)
+ {
+ 	FILE *file;
+-	static char *filename = NULL;
++	char filename[512];
++	char filename_train[512];
++  bool btrain = FALSE;
+ 
+ 	Context;
+ 	setlocale(LC_ALL, "");
+-	if(filename == NULL)
+-		filename = (char *)nmalloc(sizeof(char)*1);
+-
+-	/*
+-	 *	Allocate memory for the filename
+-	 */
+-	filename = (char *)nrealloc(filename, sizeof(char)*(strlen(directory)+strlen(SEP)+12));
+-	if(filename == NULL)
+-		error("load_personality","Unable to allocate filename");
+ 
+ 	/*
+ 	 *	Check to see if the brain exists
+ 	 */
+-	if(strcmp(directory, DEFAULT) != 0) {
+-		sprintf(filename, "%s%smegahal.brn", directory, SEP);
+-		file = fopen(filename, "r");
++  snprintf(filename, sizeof(filename), "%s%smegahal.brn", directory_cache, SEP);
++  snprintf(filename_train, sizeof(filename_train), "%s%smegahal.trn", directory_resources, SEP);
++	file = fopen(filename, "r");
++	if(file == NULL) {
++    file = fopen(filename_train, "r");
++    btrain = TRUE;
+ 		if(file == NULL) {
+-			sprintf(filename, "%s%smegahal.trn", directory, SEP);
+-			file = fopen(filename, "r");
+-			if(file == NULL) {
+-				nfree(directory);
+-				char *wlast = wchar_to_locale(mystrdup(last));
+-				directory = wlast;
+-				nfree(wlast);
+-				return;
+-			}
+-		}
+-		fclose(file);
+-		putlog(LOG_MISC, "*", "Changing to MegaHAL personality \"%s\".\n", directory);
+-	}
++      error("load_personality", "Unable to allocate directory");
++    }
++  }
++
++  if( !file) {
++    error("load_personality", "Unable to find brain");
++    return;
++  }
++	fclose(file);
++	putlog(LOG_MISC, "*", "Changing to MegaHAL personality brains = \"%s\", train = \"%s\".\n", directory_cache, directory_resources);
++
+ 
+ 	/*
+ 	 *	Free the current personality
+@@ -4011,64 +4023,35 @@
+ 	/*
+ 	 *	Train the model on a text if one exists
+ 	 */
+-	sprintf(filename, "%s%smegahal.brn", directory, SEP);
+-	if(load_model(filename, *model) == FALSE) {
+-		sprintf(filename, "%s%smegahal.trn", directory, SEP);
+-		train(*model, filename);
++	if(btrain || load_model(filename, *model) == FALSE) {
++		train(*model, filename_train);
+ 	}
+ 
+ 	/*
+ 	 *	Read a dictionary containing banned keywords, auxiliary keywords,
+ 	 *	greeting keywords and swap keywords
+ 	 */
+-	sprintf(filename, "%s%smegahal.ban", directory, SEP);
++	snprintf(filename, sizeof(filename), "%s%smegahal.ban", directory_resources, SEP);
+ 	ban = initialize_list(filename);
+-	sprintf(filename, "%s%smegahal.aux", directory, SEP);
++	snprintf(filename, sizeof(filename), "%s%smegahal.aux", directory_resources, SEP);
+ 	aux = initialize_list(filename);
+-	sprintf(filename, "%s%smegahal.swp", directory, SEP);
++	snprintf(filename, sizeof(filename), "%s%smegahal.swp", directory_resources, SEP);
+ 	swp = initialize_swap(filename);
+ }
+ 
+ /*---------------------------------------------------------------------------*/
+ 
+-static void change_personality(DICTIONARY *command, int position, MODEL **model)
++static void change_personality(MODEL **model, const char * _directory_resources, const char * _directory_cache)
+ {
+-	wchar_t *wdirectory;
+-
+-	Context;
+-	setlocale(LC_ALL, "");
+-	if(last != NULL) {
+-		nfree(last);
+-		last = NULL;
+-	}
+-	if(directory != NULL) {
+-		wdirectory = locale_to_wchar(directory);
+-		last = mystrdup(wdirectory);
+-		nfree(wdirectory);
+-	}
+-	else
+-		directory = (char *)nmalloc(sizeof(char)*1);
+-	if(directory == NULL)
+-		error("change_personality", "Unable to allocate directory");
+-	if((command==NULL) || ((position+2)>=command->size)) {
+-		directory = (char *)nrealloc(directory, sizeof(char)*(strlen(DEFAULT)+1));
+-		if(directory == NULL)
+-			error("change_personality", "Unable to allocate directory");
+-		strcpy(directory, DEFAULT);
+-		if(last == NULL) {
+-			wdirectory = locale_to_wchar(directory);
+-			last = mystrdup(wdirectory);
+-			nfree(wdirectory);
+-		}
+-	} else {
+-		directory = (char *)nrealloc(directory, sizeof(char)*(command->entry[position+2].length+1));
+-		if(directory == NULL)
+-			error("change_personality", "Unable to allocate directory");
+-		char *pers_word = wchar_to_locale(command->entry[position+2].word);
+-		strncpy(directory, pers_word, command->entry[position+2].length);
+-		nfree(pers_word);
+-		directory[command->entry[position+2].length] = '\0';
+-	}
++  if (_directory_resources) {
++    snprintf(directory_resources, sizeof(directory_resources), "%s", _directory_resources);
++  }
++
++  if ( _directory_cache ) {
++    snprintf(directory_cache, sizeof(directory_cache), "%s", _directory_cache);
++  } else if (_directory_resources) {
++    snprintf(directory_cache, sizeof(directory_cache), "%s%s%s", directory_resources, SEP, DIR_DEFAULT_CACHE);
++  }
+ 
+ 	load_personality(model);
+ }
+diff -BurN eggdrop1.6.20-sp0010_bak/src/mod/megahal.mod/megahal.h eggdrop1.6.20-sp0010/src/mod/megahal.mod/megahal.h
+--- eggdrop1.6.20-sp0010_bak/src/mod/megahal.mod/megahal.h	2009-10-16 19:02:09.000000000 +0400
++++ eggdrop1.6.20-sp0010/src/mod/megahal.mod/megahal.h	2010-10-27 01:26:56.375837849 +0400
+@@ -69,7 +69,8 @@
+ 
+ #define MIN(a,b) ((a)<(b))?(a):(b)
+ 
+-#define DEFAULT "."
++#define DIR_DEFAULT_RESOURCES "megahal.data/default"
++#define DIR_DEFAULT_CACHE "brains"
+ 
+ #define COMMAND_SIZE (sizeof(command)/sizeof(command[0]))
+ 
+@@ -139,7 +140,7 @@
+ static int babble(MODEL *, DICTIONARY *, DICTIONARY *);
+ static bool boundary(wchar_t *, int);
+ static void capitalize(wchar_t *);
+-static void change_personality(DICTIONARY *, int, MODEL **);
++static void change_personality(MODEL **, const char *, const char *);
+ static bool dissimilar(DICTIONARY *, DICTIONARY *);
+ static void error(char *, char *, ...);
+ static float evaluate_reply(MODEL *, DICTIONARY *, DICTIONARY *);
